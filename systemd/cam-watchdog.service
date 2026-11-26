@@ -1,0 +1,9 @@
+[Unit]
+Description=Vigia os streams do go2rtc e destrava produtor zumbi
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Ajuste o caminho para onde você clonou o projeto
+ExecStart=/opt/bozobrais/watchdog.sh

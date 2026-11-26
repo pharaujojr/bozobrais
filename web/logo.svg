@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6fb0ff"/>
+      <stop offset="1" stop-color="#2456d6"/>
+    </linearGradient>
+    <path id="sh" d="M32 3.5 57 11.5v18c0 15.5-10 25.5-25 31.5C17 55 7 45 7 29.5v-18z"/>
+    <path id="b" fill-rule="evenodd" d="M18 11h18.5c10 0 14.5 5 14.5 11.8 0 4.4-2.4 7.6-6 8.9 4.8 1.2 8.5 4.8 8.5 10.4 0 7.4-5.4 11.9-15.5 11.9H18zM28 19.5v9h6.8c3.8 0 5.9-1.6 5.9-4.5s-2.1-4.5-5.9-4.5zM28 36v10.5h7.6c4.4 0 6.9-1.8 6.9-5.3S40 36 35.6 36z"/>
+  </defs>
+  <g transform="rotate(-5 32 32)">
+    <use href="#sh" fill="#0f1a3d" transform="translate(2 2)"/>
+    <use href="#sh" fill="url(#bg)" stroke="#0f1a3d" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M32 8.5 52 15v14.5c0 12.8-8 21.3-20 26.6" fill="none" stroke="#1d47b8" stroke-opacity=".55" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M13 16.5 26 12" stroke="#fff" stroke-opacity=".6" stroke-width="3" stroke-linecap="round"/>
+    <g transform="translate(32 31.5) rotate(-6) scale(.68) translate(-35.7 -32.5)">
+      <use href="#b" fill="#0f1a3d" transform="translate(3 3.5)"/>
+      <use href="#b" fill="#fff" stroke="#0f1a3d" stroke-width="3.6" stroke-linejoin="round"/>
+      <path d="M21.5 15v8" stroke="#bfe0ff" stroke-width="3.5" stroke-linecap="round"/>
+    </g>
+  </g>
+</svg>

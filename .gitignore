@@ -1,0 +1,11 @@
+# segredos e estado local
+.env
+data/
+CONTAS-CAMERA.md
+go2rtc/go2rtc.yaml
+# gravações
+storage/
+# backups e lixo
+*.bak*
+.bak-*/
+__pycache__/

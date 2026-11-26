@@ -1,0 +1,57 @@
+###############################################
+# MediaMTX - servidor de mídia multi-câmera.
+# Não transcodifica nada: o go2rtc já entrega H.264/AAC transcodificado em GPU.
+# Aqui só há remux (LL-HLS, WebRTC) e a gravação em disco.
+# Os paths (live_<id>, prev_<id>, cam_<id>) são criados em RUNTIME pelo container
+# "api" via a API do MediaMTX (127.0.0.1:9997), a partir de /data/cameras.json.
+###############################################
+
+logLevel: warn
+logDestinations: [stdout]
+
+# API de controle (usada pelo container "api" p/ adicionar câmeras)
+api: yes
+apiAddress: 127.0.0.1:9997
+
+metrics: no
+pprof: no
+
+# ---- RTSP ----
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp]
+
+# ---- RTMP / SRT desligados ----
+rtmp: no
+srt: no
+
+# ---- HLS (transporte do app mobile e último fallback do site) ----
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsAllowOrigins: ['*']
+hlsAlwaysRemux: no
+# Partes curtas = latência curta. O GOP dos streams é de 24 quadros a 12 fps (2 s),
+# então cada segmento fecha em um keyframe e cada parte carrega ~2 quadros.
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentCount: 7
+hlsSegmentMaxSize: 50M
+
+# ---- WebRTC (player principal, baixa latência) ----
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigins: ['*']
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189      # fallback ICE-TCP (mesma porta) p/ redes que bloqueiam UDP
+# O host tem ~19 interfaces (docker/libvirt/tailscale). NÃO anunciar todas como
+# candidatos ICE — só o IP da LAN abaixo. Evita "deadline exceeded" no WebRTC.
+webrtcIPsFromInterfaces: no
+# IP(s) anunciados no ICE. Vem de SERVER_IP no .env (variável
+# MTX_WEBRTCADDITIONALHOSTS no docker-compose.yml).
+webrtcAdditionalHosts: []
+
+# Sem paths estáticos: são gerenciados dinamicamente pela API.
+pathDefaults:
+  record: no
+paths: {}
