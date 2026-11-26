@@ -15,6 +15,9 @@ As câmeras Wi-Fi baratas, que vêm com o app **iCSee** ou **XMEye**, têm um ha
 
 O BozoBráis fala o protocolo nativo delas (**DVRIP/Sofia**, porta 34567) direto na sua rede. A câmera pode ficar **sem acesso à internet** e você continua com vídeo ao vivo, gravações no seu disco e todos os controles.
 
+> [!WARNING]
+> **Coloque as câmeras numa VLAN sem acesso à internet (WAN).** Câmeras XiongMai, como a maioria das câmeras baratas, vêm de fábrica com telnet ou senha vazia, firmware que raramente recebe correção e conexões constantes para servidores P2P no exterior. O BozoBráis não precisa que elas saiam para a internet. Isole-as por garantia: veja [Isolando as câmeras](#isolando-as-câmeras).
+
 ## Câmeras compatíveis
 
 ### ✅ Suporte completo: XiongMai (DVRIP / Sofia)
@@ -100,7 +103,26 @@ Abra `http://IP-DO-SERVIDOR:8091`, entre com `AUTH_USER` e `API_KEY` e clique em
 
 > **Sem GPU NVIDIA:** remova as linhas `runtime: nvidia` do `docker-compose.yml` e defina `USE_GPU=0` no `.env`.
 
-> **Segurança das câmeras:** troque a senha de fábrica e, de preferência, bloqueie a saída delas para a internet no roteador. O BozoBráis não precisa que elas acessem a internet.
+### Isolando as câmeras
+
+Faça isso **sempre**, mesmo que a rede de casa pareça segura:
+
+1. **Crie uma VLAN só para as câmeras**, ex.: `192.168.50.0/24`, em um SSID separado se elas forem Wi-Fi.
+2. **Bloqueie a saída da VLAN para a WAN** no firewall do roteador. Nenhum pacote das câmeras deve sair para a internet.
+3. **Libere só o servidor do BozoBráis** a falar com a VLAN, nas portas 34567 (DVRIP), 554 (RTSP) e 8899 (ONVIF). O resto da sua rede (celulares, PCs) não precisa enxergar as câmeras: todo mundo assiste pelo BozoBráis.
+4. **Relógio:** sem internet, a câmera perde o NTP. Aponte o NTP dela para o roteador ou para o servidor. As gravações usam o relógio do servidor, então isso afeta só a marca d'água da imagem.
+5. **Troque a senha de fábrica** (`admin` sem senha) e, se o modelo tiver, desligue o P2P/"Cloud" no menu da câmera.
+
+Exemplo no MikroTik (VLAN das câmeras = `vlan-cam`, servidor = `192.168.1.10`):
+
+```
+/ip firewall filter
+add chain=forward in-interface=vlan-cam out-interface-list=WAN action=drop comment="cameras sem internet"
+add chain=forward src-address=192.168.1.10 out-interface=vlan-cam action=accept comment="so o servidor fala com as cameras"
+add chain=forward out-interface=vlan-cam connection-state=new action=drop
+```
+
+No OpenWrt, pfSense/OPNsense ou UniFi a ideia é a mesma: uma zona ou rede para as câmeras **sem encaminhamento para a WAN** e uma regra liberando só o IP do servidor.
 
 ### Watchdog (opcional)
 
