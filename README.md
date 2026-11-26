@@ -1,7 +1,7 @@
 <p align="center"><img src="web/logo.svg" width="80" alt=""></p>
 <h1 align="center">BozoBráis</h1>
 
-<p align="center"><b>Monitoramento de câmeras XiongMai (iCSee / XMEye) sem nuvem chinesa.</b><br>
+<p align="center"><b>Monitoramento de câmeras sem nuvem: XiongMai (iCSee / XMEye) com todos os recursos e qualquer câmera RTSP.</b><br>
 Ao vivo no navegador e no celular, gravação contínua com linha do tempo, PTZ, luz, áudio bidirecional e transcodificação na GPU, tudo num <code>docker compose</code>.</p>
 
 ---
@@ -40,18 +40,33 @@ São câmeras com chipset e firmware **XiongMai (XM)**, vendidas com dezenas de 
 
 > **Diferenças conhecidas entre modelos:** o pan pode vir espelhado. O modo `Auto` da luz pode preferir o IR e não acender o LED. E o firmware às vezes aceita qualquer valor sem validar. Há detalhes medidos em [docs/NOTAS-XIONGMAI.md](docs/NOTAS-XIONGMAI.md).
 
-### ⚠️ Suporte básico: qualquer câmera RTSP
+### ✅ Qualquer câmera RTSP: Intelbras, Hikvision, Dahua, Tapo...
 
-Intelbras, Hikvision, Dahua, Tapo e outras com RTSP podem ser cadastradas **pela API** (`POST /api/cameras` com `driver: "rtsp"` e `rtsp_main`/`rtsp_sub`), mas ainda não pelo site. Nesse modo há vídeo ao vivo, gravação e snapshot. O PTZ funciona se a câmera tiver ONVIF (informe `onvif_port`). Luz e áudio bidirecional são exclusivos da XiongMai.
+No site, em **Adicionar câmera → Outra marca (RTSP)**:
+1. Cole a URL principal e, se houver, a do substream.
+2. Clique em **Testar conexão**: o sistema mostra a resolução e o codec e diz se vai decodificar na GPU.
+3. Se a câmera tiver PTZ, abra **PTZ por ONVIF** e informe porta, perfil e login.
+
+Nesse modo há vídeo ao vivo, gravação, linha do tempo, snapshot e divisão de câmeras com duas lentes. Luz e áudio bidirecional são exclusivos da XiongMai. A câmera abre **uma conexão só** (o go2rtc repassa para todos os streams), o que importa porque modelos baratos costumam aceitar só 2 ou 3 sessões simultâneas.
+
+| Marca | URL principal típica | Substream |
+|---|---|---|
+| Intelbras / Dahua | `rtsp://user:senha@IP:554/cam/realmonitor?channel=1&subtype=0` | `subtype=1` |
+| Hikvision | `rtsp://user:senha@IP:554/Streaming/Channels/101` | `.../102` |
+| Tapo (TP-Link) | `rtsp://user:senha@IP:554/stream1` | `stream2` |
+| Reolink | `rtsp://user:senha@IP:554/h264Preview_01_main` | `..._sub` |
+
+> Senhas com `@`, `:` ou `/` precisam ser codificadas na URL (`@` vira `%40`).
 
 ### Codec e GPU
 
 | Câmera envia | `USE_GPU=1` (NVIDIA) | `USE_GPU=0` (CPU) |
 |---|---|---|
-| **H.265 / HEVC** (a maioria das XiongMai recentes) | ✅ NVDEC → NVENC, quase sem CPU | ✅ libx264, pesado com várias câmeras |
-| **H.264** | ❌ o decodificador da GPU é fixo em `hevc_cuvid` | ✅ |
+| **H.265 / HEVC** (a maioria das XiongMai recentes) | ✅ NVDEC (`hevc_cuvid`) → NVENC, quase sem CPU | ✅ libx264, pesado com várias câmeras |
+| **H.264** | ✅ NVDEC (`h264_cuvid`) → NVENC | ✅ |
+| Outros (MJPEG...) | cai automaticamente para a CPU | ✅ |
 
-Com GPU, uma GTX 1050 dá conta de várias câmeras com folga.
+O codec de cada câmera é detectado no cadastro. Com GPU, uma GTX 1050 dá conta de várias câmeras com folga.
 
 ## O que você ganha
 
@@ -66,7 +81,7 @@ Com GPU, uma GTX 1050 dá conta de várias câmeras com folga.
 ## Arquitetura
 
 ```
-câmera --dvrip--> go2rtc (<id>_sub · <id>_main, H.265)
+câmera --dvrip/rtsp--> go2rtc (<id>_sub · <id>_main)
                      |
                      +-- v_<id>_hd    main -> recorte -> 720p   h264_nvenc + AAC
                      +-- v_<id>_lo    sub  -> recorte -> 360p   h264_nvenc + AAC  (miniaturas)
@@ -77,7 +92,7 @@ câmera --dvrip--> go2rtc (<id>_sub · <id>_main, H.265)
        MediaMTX <----+  só remux (copy): live_<id> -> LL-HLS · cam_<id> -> disco
 ```
 
-- **go2rtc:** fala DVRIP com a câmera e roda os `ffmpeg`. O recorte e o redimensionamento acontecem **dentro do decodificador** (`hevc_cuvid -crop/-resize`), então o quadro nunca passa pela CPU.
+- **go2rtc:** fala DVRIP ou RTSP com a câmera (uma conexão só) e roda os `ffmpeg`. O recorte e o redimensionamento acontecem **dentro do decodificador** (`hevc_cuvid`/`h264_cuvid -crop/-resize`), então o quadro nunca passa pela CPU.
 - **MediaMTX:** só remux: LL-HLS, WebRTC e gravação em segmentos de 10 minutos.
 - **api (FastAPI):**
   - serve o site e a API REST;
@@ -140,6 +155,7 @@ sudo systemctl enable --now cam-watchdog.timer
 | GET | `/storage` | Uso de disco comparado ao teto |
 | GET / POST | `/cameras` | Lista e adiciona |
 | POST | `/cameras/probe` | Auto-detecta uma XiongMai (`{ip,user,pw}`) |
+| POST | `/cameras/probe-rtsp` | Testa uma câmera RTSP (`{rtsp_main, rtsp_sub}`): codec, resolução, GPU |
 | PATCH / DELETE | `/cameras/{id}` | Renomeia e remove |
 | POST | `/cameras/{id}/split?layout=auto` | Divide uma câmera multi-sensor |
 | GET | `/cameras/{id}/snapshot` | JPEG atual |

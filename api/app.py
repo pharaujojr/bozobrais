@@ -21,7 +21,7 @@ custa praticamente nada.
 import os, re, socket, struct, json, hashlib, hmac, secrets, threading, subprocess, time, base64, asyncio
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 import httpx
 import websockets
 from fastapi import FastAPI, HTTPException, Request, Response, Query, Body, WebSocket, WebSocketDisconnect
@@ -117,7 +117,9 @@ def get_camera(cid):
     raise HTTPException(404, f"câmera '{cid}' não encontrada")
 
 def slugify(s):
-    s = re.sub(r"[^a-zA-Z0-9_-]+", "-", (s or "").strip().lower()).strip("-")
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()   # "Portão" -> "portao"
+    s = re.sub(r"[^a-zA-Z0-9_-]+", "-", s.strip().lower()).strip("-")
     return s or "cam"
 
 # ======================= Cliente DVRIP (Sofia / 34567) =======================
@@ -351,24 +353,28 @@ def owner_id(cam):
     return cam.get("rec_ref") or cam["id"]
 
 def camera_source(cam, quality="sub"):
-    if cam.get("driver") == "xiongmai":
-        return f"{GO2RTC_RTSP}/{owner_id(cam)}_{quality}"
-    if quality == "main":
-        return cam["rtsp_main"]
-    return cam.get("rtsp_sub") or cam["rtsp_main"]
+    # Todas as câmeras (XiongMai ou RTSP genérica) passam pelo relay do go2rtc: uma
+    # conexão só com a câmera, não importa quantos streams derivados existam. As
+    # câmeras baratas costumam aceitar só 2 ou 3 sessões RTSP simultâneas.
+    return f"{GO2RTC_RTSP}/{owner_id(cam)}_{quality}"
+
+def stream_probe(url):
+    """Resolução e codec do vídeo de um stream ou arquivo (via ffprobe)."""
+    try:
+        p = subprocess.run(["ffprobe", "-v", "error", "-rtsp_transport", "tcp",
+                            "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height",
+                            "-of", "csv=p=0", "-i", str(url)], capture_output=True, timeout=25)
+        m = re.search(r"([a-z0-9_]+),(\d{2,5}),(\d{2,5})", p.stdout.decode("latin1"))
+        if m:
+            return m.group(1), int(m.group(2)), int(m.group(3))
+    except Exception:
+        pass
+    return None, None, None
 
 def stream_res(url):
     """Resolução de um stream ou arquivo (via ffprobe)."""
-    try:
-        p = subprocess.run(["ffprobe", "-v", "error", "-rtsp_transport", "tcp",
-                            "-select_streams", "v:0", "-show_entries", "stream=width,height",
-                            "-of", "csv=p=0", "-i", str(url)], capture_output=True, timeout=25)
-        m = re.search(r"(\d{2,5}),(\d{2,5})", p.stdout.decode("latin1"))
-        if m:
-            return int(m.group(1)), int(m.group(2))
-    except Exception:
-        pass
-    return None, None
+    _, w, h = stream_probe(url)
+    return w, h
 
 _res_cache = {}   # (owner, quality) -> (w, h)
 
@@ -382,14 +388,36 @@ def source_res(cam, quality):
     if isinstance(saved, list) and len(saved) == 2 and all(saved):
         _res_cache[key] = (saved[0], saved[1])
         return _res_cache[key]
-    w, h = stream_res(camera_source(cam, quality))
+    codec, w, h = stream_probe(camera_source(cam, quality))
     if w and h:
         _res_cache[key] = (w, h)
+        patch = {f"res_{quality}": [w, h]}
+        if codec:
+            patch[f"codec_{quality}"] = codec
+            _codec_cache[key] = codec
         try:
-            update_camera(ref, {f"res_{quality}": [w, h]})     # memoriza no dono do stream
+            update_camera(ref, patch)     # memoriza no dono do stream
         except HTTPException:
             pass
     return w, h
+
+_codec_cache = {}   # (owner, quality) -> "hevc" | "h264" | ...
+
+# Decodificadores NVDEC por codec da câmera. O que não estiver aqui decodifica na CPU.
+CUVID_DECODERS = {"hevc": "hevc_cuvid", "h264": "h264_cuvid"}
+
+def source_codec(cam, quality):
+    """Codec do vídeo da fonte. Sem informação, assume H.265 (o padrão das XiongMai)."""
+    ref = owner_id(cam)
+    key = (ref, quality)
+    if key not in _codec_cache:
+        # recortes (rec_ref) usam o stream do pai, onde o codec fica memorizado
+        owner = cam if ref == cam["id"] else next((c for c in load_cameras() if c["id"] == ref), cam)
+        saved = owner.get(f"codec_{quality}")
+        if not saved:
+            return "hevc"
+        _codec_cache[key] = saved
+    return _codec_cache[key]
 
 def detect_layout(w, h):
     if not (w and h): return None
@@ -430,8 +458,9 @@ def _live_cmd(cam, quality, profile, crop=None):
     inp = ["-fflags", "+genpts+discardcorrupt", "-use_wallclock_as_timestamps", "1",
            "-rtsp_transport", "tcp", "-i", src]
 
-    if USE_GPU:
-        pre = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-c:v", "hevc_cuvid"]
+    decoder = CUVID_DECODERS.get(source_codec(cam, quality))
+    if USE_GPU and decoder:
+        pre = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-c:v", decoder]
         if crop_arg:
             pre += ["-crop", crop_arg]
         if (ow, oh) != (cw, ch):
@@ -1171,8 +1200,37 @@ def probe(ip: str = Body(...), user: str = Body("admin"), pw: str = Body(""), dv
             "splittable": bool(layout), "split_layout": layout,
             "rtsp_main": main, "rtsp_sub": xm_rtsp(ip, user, pw, 1)}
 
+def _check_rtsp_url(url, field):
+    url = str(url or "").strip()
+    # Só RTSP: o ffprobe também abriria file://, http:// etc. com a permissão do container.
+    if not re.match(r"^rtsps?://[^\s/]+", url, re.IGNORECASE):
+        raise HTTPException(400, f"{field}: informe uma URL rtsp://")
+    return url
+
+@app.post("/api/cameras/probe-rtsp")
+def probe_rtsp(rtsp_main: str = Body(...), rtsp_sub: str = Body("")):
+    """Testa uma câmera RTSP genérica: codec, resolução e se o substream responde."""
+    main = _check_rtsp_url(rtsp_main, "URL principal")
+    sub = _check_rtsp_url(rtsp_sub, "URL secundária") if str(rtsp_sub or "").strip() else ""
+    codec, w, h = stream_probe(main)
+    if not w:
+        raise HTTPException(502, "não consegui abrir o vídeo dessa URL (confira endereço, usuário e senha)")
+    out = {"driver": "rtsp", "ip": urlparse(main).hostname, "rtsp_main": main,
+           "codec": codec, "resolution": f"{w}x{h}",
+           "gpu": bool(USE_GPU and codec in CUVID_DECODERS)}
+    if sub:
+        s_codec, sw, sh = stream_probe(sub)
+        if not sw:
+            raise HTTPException(502, "a URL secundária não respondeu (deixe em branco para usar só a principal)")
+        out.update({"rtsp_sub": sub, "sub_codec": s_codec, "sub_resolution": f"{sw}x{sh}"})
+    layout = detect_layout(w, h)
+    out.update({"splittable": bool(layout), "split_layout": layout})
+    return out
+
 @app.post("/api/cameras")
 def add_camera(cam: dict = Body(...)):
+    if cam.get("driver") == "rtsp":
+        return _add_rtsp_camera(cam)
     if not cam.get("ip"):
         raise HTTPException(400, "ip é obrigatório")
     cams = load_cameras()
@@ -1193,6 +1251,36 @@ def add_camera(cam: dict = Body(...)):
         "record": bool(cam.get("record", True)),
         "onvif_port": int(cam["onvif_port"]) if cam.get("onvif_port") else None,
         "ptz_profile": cam.get("ptz_profile"),
+    }
+    with _store_lock:
+        cams.append(entry); save_cameras(cams)
+    ensure_camera(entry)
+    return _pub(entry)
+
+def _new_id(cams, wanted):
+    cid = slugify(wanted)
+    ids = {c["id"] for c in cams}
+    base, n = cid, 2
+    while cid in ids:
+        cid = f"{base}-{n}"; n += 1
+    return cid
+
+def _add_rtsp_camera(cam):
+    """Câmera genérica: vídeo por RTSP e, opcionalmente, PTZ por ONVIF."""
+    main = _check_rtsp_url(cam.get("rtsp_main"), "URL principal")
+    sub = _check_rtsp_url(cam.get("rtsp_sub"), "URL secundária") if str(cam.get("rtsp_sub") or "").strip() else ""
+    ip = urlparse(main).hostname
+    onvif_port = int(cam["onvif_port"]) if str(cam.get("onvif_port") or "").strip() else None
+    cams = load_cameras()
+    entry = {
+        "id": _new_id(cams, cam.get("name") or ip), "name": cam.get("name") or ip, "ip": ip,
+        "driver": "rtsp", "rtsp_main": main, "rtsp_sub": sub or None,
+        # usuário/senha aqui servem só ao ONVIF (o RTSP leva os dele na própria URL)
+        "user": cam.get("user") or "admin", "pass": cam.get("pass") or "",
+        "ptz": bool(onvif_port and cam.get("ptz")), "lamp": False, "talk": False,
+        "record": bool(cam.get("record", True)),
+        "onvif_port": onvif_port,
+        "ptz_profile": (cam.get("ptz_profile") or "").strip() or "Profile_1",
     }
     with _store_lock:
         cams.append(entry); save_cameras(cams)

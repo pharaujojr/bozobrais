@@ -146,6 +146,10 @@
   }
   .seg button:hover{color:var(--tx)}
   .seg button.on{background:var(--surface3);color:var(--tx);box-shadow:var(--sh)}
+  .add-mode{margin:4px 0 12px}
+  .add-mode button{flex:1}
+  .a-onvif{margin-top:12px;color:var(--dim)}
+  .a-onvif summary{cursor:pointer;font-size:13px}
 
   /* ---------- views ---------- */
   .view{flex:1;min-width:0;display:none;flex-direction:column;min-height:0}
@@ -648,11 +652,33 @@
 <!-- modal: adicionar -->
 <div class="modal" id="addModal"><div class="card">
   <h2><span class="hicon" data-ic="plus"></span>Adicionar câmera</h2>
-  <p class="lead">Informe o IP da câmera na rede local. O sistema detecta o modelo e os recursos sozinho.</p>
-  <label>Endereço IP</label><input type="text" id="a_ip" placeholder="192.168.1.xxx" inputmode="decimal"/>
-  <div class="row">
-    <div><label>Usuário</label><input type="text" id="a_user" value="admin" autocomplete="off"/></div>
-    <div><label>Senha</label><input type="password" id="a_pass" placeholder="(vazia)" autocomplete="new-password"/></div>
+  <div class="seg add-mode" id="a_mode">
+    <button type="button" class="on" data-mode="xm">XiongMai (iCSee/XMEye)</button>
+    <button type="button" data-mode="rtsp">Outra marca (RTSP)</button>
+  </div>
+  <div id="a_xm">
+    <p class="lead">Informe o IP da câmera na rede local. O sistema detecta o modelo e os recursos sozinho.</p>
+    <label>Endereço IP</label><input type="text" id="a_ip" placeholder="192.168.1.xxx" inputmode="decimal"/>
+    <div class="row">
+      <div><label>Usuário</label><input type="text" id="a_user" value="admin" autocomplete="off"/></div>
+      <div><label>Senha</label><input type="password" id="a_pass" placeholder="(vazia)" autocomplete="new-password"/></div>
+    </div>
+  </div>
+  <div id="a_rtsp" hidden>
+    <p class="lead">Qualquer câmera com RTSP: Intelbras, Hikvision, Dahua, Tapo e outras. Usuário e senha vão dentro da URL.</p>
+    <label>URL principal (alta resolução)</label><input type="text" id="a_rmain" placeholder="rtsp://usuario:senha@192.168.1.xxx:554/..." autocomplete="off" spellcheck="false"/>
+    <label>URL secundária (opcional, baixa resolução)</label><input type="text" id="a_rsub" placeholder="rtsp://... (substream: miniaturas e gravação mais leves)" autocomplete="off" spellcheck="false"/>
+    <details class="a-onvif">
+      <summary>PTZ por ONVIF (opcional)</summary>
+      <div class="row">
+        <div><label>Porta ONVIF</label><input type="text" id="a_oport" placeholder="ex.: 80, 8000, 8899" inputmode="numeric"/></div>
+        <div><label>Perfil</label><input type="text" id="a_oprof" placeholder="Profile_1" autocomplete="off"/></div>
+      </div>
+      <div class="row">
+        <div><label>Usuário ONVIF</label><input type="text" id="a_ouser" value="admin" autocomplete="off"/></div>
+        <div><label>Senha ONVIF</label><input type="password" id="a_opass" autocomplete="new-password"/></div>
+      </div>
+    </details>
   </div>
   <button class="btn wide" style="margin-top:14px" id="a_det" onclick="detect()"><span data-ic="search"></span>Detectar câmera</button>
   <div class="detected" id="a_found"></div>
@@ -1613,15 +1639,47 @@ function bindTimeline(){
    ========================================================================= */
 function closeModal(id){ $('#'+id).classList.remove('show'); }
 
-let detected=null;
-function openAdd(){
-  detected=null; $('#a_add').disabled=true; $('#a_hint').textContent='';
+let detected=null, addMode='xm';
+const modeBtns=()=>document.querySelectorAll('#a_mode button');
+function setAddMode(m){
+  addMode=m; detected=null; $('#a_add').disabled=true; $('#a_hint').textContent='';
   $('#a_found').classList.remove('show');
-  ['a_ip','a_name','a_pass'].forEach(i=>$('#'+i).value=''); $('#a_user').value='admin';
-  $('#addModal').classList.add('show'); $('#a_ip').focus();
+  modeBtns().forEach(b=>b.classList.toggle('on', b.dataset.mode===m));
+  $('#a_xm').hidden = m!=='xm'; $('#a_rtsp').hidden = m!=='rtsp';
+  $('#a_det').lastChild.textContent = m==='xm' ? 'Detectar câmera' : 'Testar conexão';
+  (m==='xm' ? $('#a_ip') : $('#a_rmain')).focus();
+}
+modeBtns().forEach(b=>b.addEventListener('click',()=>setAddMode(b.dataset.mode)));
+function openAdd(){
+  ['a_ip','a_name','a_pass','a_rmain','a_rsub','a_oport','a_oprof','a_opass'].forEach(i=>$('#'+i).value='');
+  $('#a_user').value='admin'; $('#a_ouser').value='admin'; $('.a-onvif').open=false;
+  $('#addModal').classList.add('show');
+  setAddMode('xm');
   $('#sidebar').classList.remove('open');
 }
+async function testRtsp(){
+  const main=$('#a_rmain').value.trim();
+  if(!/^rtsps?:\/\//i.test(main)){ $('#a_hint').textContent='Informe a URL principal começando com rtsp://'; $('#a_rmain').focus(); return; }
+  const b=$('#a_det'); b.disabled=true; b.lastChild.textContent='Testando…';
+  $('#a_hint').textContent=''; $('#a_found').classList.remove('show');
+  try{
+    const r=await fetch('/api/cameras/probe-rtsp',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rtsp_main:main,rtsp_sub:$('#a_rsub').value.trim()})});
+    const d=await r.json();
+    if(!r.ok){ $('#a_hint').textContent='Não consegui: '+(d.detail||'confira a URL'); return; }
+    detected=d; if(!$('#a_name').value) $('#a_name').value=d.ip||'Câmera';
+    const codec=(d.codec||'?').toUpperCase().replace('HEVC','H.265').replace('H264','H.264');
+    $('#a_found').innerHTML=`<b>Vídeo OK</b> · ${esc(d.resolution)} · ${esc(codec)}`
+      + (d.sub_resolution?`<br>Secundária: ${esc(d.sub_resolution)}`:'')
+      + `<br>${d.gpu?'<span style="color:var(--live)">Decodifica na GPU.</span>':'<span style="color:var(--dim)">Decodifica na CPU.</span>'}`
+      + (d.splittable?'<br><span style="color:var(--acc2)">Parece ter dois sensores: dá para dividir em duas imagens depois.</span>':'');
+    $('#a_found').classList.add('show');
+    $('#a_add').disabled=false; $('#a_name').focus(); $('#a_name').select();
+  }catch(e){ $('#a_hint').textContent='Erro: '+e.message; }
+  finally{ b.disabled=false; b.lastChild.textContent='Testar conexão'; }
+}
 async function detect(){
+  if(addMode==='rtsp') return testRtsp();
   const ip=$('#a_ip').value.trim();
   if(!ip){ $('#a_hint').textContent='Informe o IP.'; $('#a_ip').focus(); return; }
   const b=$('#a_det'); b.disabled=true; b.lastChild.textContent='Detectando…';
@@ -1642,12 +1700,20 @@ async function detect(){
   finally{ b.disabled=false; b.lastChild.textContent='Detectar câmera'; }
 }
 async function addCam(){
-  const body = detected ? {...detected}
-             : {ip:$('#a_ip').value,user:$('#a_user').value,pass:$('#a_pass').value};
+  let body;
+  if(addMode==='rtsp'){
+    const port=$('#a_oport').value.trim();
+    body={driver:'rtsp', rtsp_main:detected.rtsp_main, rtsp_sub:detected.rtsp_sub||'',
+          onvif_port:port, ptz:!!port, ptz_profile:$('#a_oprof').value.trim(),
+          user:$('#a_ouser').value.trim(), pass:$('#a_opass').value};
+  }else{
+    body = detected ? {...detected}
+         : {ip:$('#a_ip').value,user:$('#a_user').value,pass:$('#a_pass').value};
+  }
   body.name=$('#a_name').value||body.name;
   const r=await fetch('/api/cameras',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)});
-  if(!r.ok){ $('#a_hint').textContent='Erro ao adicionar.'; return; }
+  if(!r.ok){ const d=await r.json().catch(()=>({})); $('#a_hint').textContent='Erro ao adicionar'+(d.detail?': '+d.detail:'.'); return; }
   const c=await r.json(); closeModal('addModal'); await loadCams(); go('cam/'+c.id);
   toast('Câmera adicionada');
 }
@@ -1713,7 +1779,7 @@ applyLayout(); bindPtz(); bindZoom(); bindTimeline(); bindTalk();
 document.addEventListener('keydown',e=>{
   if(e.target.matches('input,select,textarea')){
     if(e.key==='Enter' && e.target.closest('#renameModal')) saveRename();
-    if(e.key==='Enter' && e.target.id==='a_ip') detect();
+    if(e.key==='Enter' && ['a_ip','a_rmain','a_rsub'].includes(e.target.id)) detect();
     if(e.key!=='Escape') return;
   }
   const modal=document.querySelector('.modal.show');
